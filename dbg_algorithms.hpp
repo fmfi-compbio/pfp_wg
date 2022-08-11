@@ -31,6 +31,7 @@
 
 #include <sdsl/csa_wt.hpp>
 #include <sdsl/int_vector.hpp>
+#include <sdsl/wavelet_trees.hpp>
 
 #include <deque>
 #include <vector>
@@ -52,11 +53,13 @@ class dbg_algorithms {
 		// nb_buffer: a buffer used to write the node bound indices occuring during the execution of the algorithm
 		// order_edgecnt_output: function that is called for every order k with the current edgecount and the order
 		template<bool stop_on_min=true,
-		         class t_csa_wt_type,
 		         class f_order_edgecnt_output>
-		static std::pair<size_type,size_type> minimize_dbg_edges( const t_csa_wt_type &csa, size_type kmax, sdsl::bit_vector &B,
-		                                                          sdsl::int_vector_buffer<> &nb_buffer,
-		                                                          f_order_edgecnt_output order_edgecnt_output );
+		static std::pair<size_type,size_type> minimize_dbg_edges(const sdsl::wt_blcd_int<> &csa,
+                                                                         const std::vector<uint64_t> &C,
+                                                                         size_type kmax,
+                                                                         sdsl::bit_vector &B,
+		                                                         sdsl::int_vector_buffer<> &nb_buffer,
+		                                                         f_order_edgecnt_output order_edgecnt_output);
 
 	public:		
 		//function behaves as calling dbg_edgecount for each values from 1 to (including) k,
@@ -65,8 +68,7 @@ class dbg_algorithms {
 		// k: maximal k from which the number of edges of the DBG shall be determined
 		// function returns a vector of size k containing the edge count of each order k,
 		// where number of edges of an order k edge-reduced graph can be queried at index (k-1).
-		template<class t_csa_wt_type>
-		static std::vector<size_type> dbg_edgespectrum( const t_csa_wt_type &csa, size_type k ) {
+		static std::vector<size_type> dbg_edgespectrum( const sdsl::wt_blcd_int<> &csa, const std::vector<uint64_t> &C, size_type k ) {
 			assert( k > 0 && k <= csa.size() );
 
 			//initialize B
@@ -79,7 +81,7 @@ class dbg_algorithms {
 			sdsl::int_vector_buffer<> nb_buffer("/dev/null", std::ios::out);
 
 			//compute spectrum
-			minimize_dbg_edges<false>( csa, k, B, nb_buffer, [&ES](size_type k,size_type m) { if (k > 0u) ES[k-1] = m; } );
+			minimize_dbg_edges<false>( csa, C, k, B, nb_buffer, [&ES](size_type k,size_type m) { if (k > 0u) ES[k-1] = m; } );
 
 			return ES;
 		};
@@ -92,8 +94,10 @@ class dbg_algorithms {
 		// config: a config indicating where temporary files should be saved
 		// function returns a pair of two integers, where the first integer corresponds to the order k whilst
 		// the second integer indicates the minimal amount of edges.
-		template<class t_csa_wt_type>
-		static std::pair<size_type,size_type> find_min_dbg( const t_csa_wt_type &csa, sdsl::bit_vector &B, sdsl::cache_config &config ) {
+		static std::pair<size_type,size_type> find_min_dbg(
+                    const sdsl::wt_blcd_int<> &csa,
+                    const std::vector<uint64_t> &C,
+                    sdsl::bit_vector &B, sdsl::cache_config &config ) {
 			//prepare bitvector B
 			//initialize B
 			B.resize( csa.size() + 1 );
@@ -105,7 +109,8 @@ class dbg_algorithms {
 			sdsl::int_vector_buffer<> nb_buffer(tmp_file_name, std::ios::out);
 
 			//run algorithm
-			auto result = minimize_dbg_edges<true>( csa, csa.size(), B, nb_buffer, [](size_type,size_type) {} );
+                        std::cout << "Minimizing edges" << std::endl;
+			auto result = minimize_dbg_edges<true>( csa, C, csa.size(), B, nb_buffer, [](size_type,size_type) {} );
 
 			//retain node bounds of optimal solution
 			for (auto nb : nb_buffer) B[nb] = 0;
@@ -122,27 +127,24 @@ class dbg_algorithms {
 		//ends of a possible prefix interval are indicated by a 10...0 sequence in dout.
 		//in case that dout and din are copies of bitvector B from find_min_dbg function, this computes
 		//a marking of k-mer prefix intervals.
-		template<class t_csa_wt_type>
-		static void mark_prefix_intervals( const t_csa_wt_type &csa, sdsl::bit_vector &dout, sdsl::bit_vector &din ) {
+		static void mark_prefix_intervals( const sdsl::wt_blcd_int<> &csa, const std::vector<uint64_t> &C, sdsl::bit_vector &dout, sdsl::bit_vector &din ) {
 
 			//variables needed for interval_symbols function
-			typename t_csa_wt_type::size_type iv_chars;
-			// std::vector<unsigned char> cs ( csa.sigma );
+			typename sdsl::wt_blcd_int<>::size_type iv_chars;
 			std::vector<long unsigned int> cs(csa.sigma);
 			std::vector<size_type> rank_c_l( csa.sigma );
 			std::vector<size_type> rank_c_r( csa.sigma );
 
-			//algorithm itself
 			size_type i = 0;
 			for (size_type j = 1; j < din.size(); j++) {
 				if (din[j] == 1) { //[i,j) is a start of a possible prefix interval
 
-					sdsl::interval_symbols( csa.wavelet_tree, i, j, iv_chars, cs, rank_c_l, rank_c_r );
+					sdsl::interval_symbols( csa, i, j, iv_chars, cs, rank_c_l, rank_c_r );
 
 					//check if start has multiple predecessors (iv_chars > 1)
 					//or [LF[i],LF[j-1]] is no possible end of a tunnel
-					size_type lb = csa.C[csa.char2comp[cs[0]]] + rank_c_l[0];
-					size_type rb = csa.C[csa.char2comp[cs[0]]] + rank_c_r[0];
+					size_type lb = C[cs[0]] + rank_c_l[0];
+					size_type rb = C[cs[0]] + rank_c_r[0];
 
 					bool pi = (iv_chars == 1) && (dout[lb] == 1) && (dout[rb] == 1); //pi: possible prefix interval
 					while (pi && (++lb < rb)) {
@@ -153,7 +155,7 @@ class dbg_algorithms {
 					if (!pi) {
 						//clean zeros, no column of a prefix interval
 						for (size_type c = 0; c < iv_chars; c++) {
-							auto Cc = csa.C[csa.char2comp[cs[c]]];
+							auto Cc = C[cs[c]];
 							do {
 								din[i++] = 1;
 								dout[Cc + rank_c_l[c]++] = 1;
@@ -170,10 +172,9 @@ class dbg_algorithms {
 
 //// EDGE MINIMIZATION ALGORITHM ////
 template<bool stop_on_min,
-         class t_csa_wt_type,
          class f_order_edgecnt_output>
 std::pair<dbg_algorithms::size_type,dbg_algorithms::size_type> 
-dbg_algorithms::minimize_dbg_edges( const t_csa_wt_type &csa, size_type kmax, sdsl::bit_vector &B,
+dbg_algorithms::minimize_dbg_edges( const sdsl::wt_blcd_int<> &csa, const std::vector<uint64_t> &C, size_type kmax, sdsl::bit_vector &B,
                                     sdsl::int_vector_buffer<> &nb_buffer,
                                     f_order_edgecnt_output order_edgecnt_output ) {
 	assert( csa.size() < std::numeric_limits<size_type>::max() );
@@ -212,11 +213,11 @@ dbg_algorithms::minimize_dbg_edges( const t_csa_wt_type &csa, size_type kmax, sd
 				Q[c].pop_front();
 				size_type lb = iv.first, rb = iv.second;
 
-				sdsl::interval_symbols( csa.wavelet_tree, lb, rb + 1, iv_chars, cs, rank_c_i, rank_c_j );
+				sdsl::interval_symbols( csa, lb, rb + 1, iv_chars, cs, rank_c_i, rank_c_j );
 				if (iv_chars == 1) {  // reclassify edges
-					auto c = csa.char2comp[cs[0]];
-					auto i = csa.C[c] + rank_c_i[0];
-					auto j = csa.C[c] + rank_c_j[0] - 1;
+					auto c = cs[0];
+					auto i = C[c] + rank_c_i[0];
+					auto j = C[c] + rank_c_j[0] - 1;
 					if (B[i] == 1 && B[j+1] == 1) {  // node has no siblings
 						m -= (rb - lb);
 					} else {
@@ -225,9 +226,9 @@ dbg_algorithms::minimize_dbg_edges( const t_csa_wt_type &csa, size_type kmax, sd
 					F[rb] = 1; 
 				}
 				for (size_type c_i = 0; c_i < iv_chars; c_i++) {
-					auto c = csa.char2comp[cs[c_i]];
-					auto i = csa.C[c] + rank_c_i[c_i];
-					auto j = csa.C[c] + rank_c_j[c_i] - 1 ;
+					auto c = cs[c_i];
+					auto i = C[c] + rank_c_i[c_i];
+					auto j = C[c] + rank_c_j[c_i] - 1 ;
 					if (B[i] == 0 || B[j+1] == 0) {
 						if (B[j+1] == 0) {
 							nG++;

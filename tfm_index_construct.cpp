@@ -39,21 +39,26 @@
 
 #include "tfm_index.hpp"
 
+extern "C" {
+#include "gsa/gsacak.h"
+#include "utils.h"
+}
+
 using namespace std;
 using namespace sdsl;
 
+// -------------------------------------------------------
+// type used to represent an entry in the SA
+// this is currently 32 bit for gsacak and 64 bit for gsacak-64
+// note that here we use sacak (SA computation for a single string of 32 bit symbols)
+typedef uint_t sa_index_t;
+
 void printUsage(char **argv) {
-    cerr << "USAGE: " << argv[0] << " [OPTIONS] INFILE TFMOUTFILE" << endl;
-    cerr << "OPTIONS:" << endl;
-    cerr << "  -i\tEnable informative mode, printing memory peaks (in bytes) and" << endl;
-    cerr << "    \tconstruction timings (in milliseconds) during construction" << endl;
-    cerr << "  -sa\tChoose suffix array construction algorithm. Must be followed by one of:" << endl;
-    cerr << "     \tDIVSUFSORT   use divsufsort (fast but memory-intensive)" << endl;
-    cerr << "     \tSE_SAIS         use a semi-external algorithm (slower but lower mem peak)" << endl;
+    cerr << "USAGE: " << argv[0] << " INFILE TFMOUTFILE" << endl;
     cerr << "INFILE:" << endl;
-    cerr << "  File to construct tunneled FM index from, nullbytes are permitted" << endl;
+    cerr << "  Parse file to construct tunneled FM index from, nullbytes are permitted" << endl;
     cerr << "TFMOUTFILE:" << endl;
-    cerr << "  File where to store the serialized tunneled fm index" << endl;
+    cerr << "  File where to store the serialized tunneled FM index of the parse" << endl;
 };
 
 //little hack to get extra information from memory managemant
@@ -75,7 +80,7 @@ namespace sdsl {
         auto fm_end = fm_start;
         while (e != events.end() && e->name != "FINDMINDBG") {
             for (auto alloc : e->allocations) {
-                fm_mem_peak = std::max(fm_mem_peak, alloc.usage);
+                fm_mem_peak = (std::max)(fm_mem_peak, alloc.usage);
                 fm_end = alloc.timestamp;
             }
             ++e;
@@ -87,7 +92,7 @@ namespace sdsl {
         auto dbg_end = dbg_start;
         while (e != events.end() && e->name != "TFMINDEXCONSTRUCT") {
             for (auto alloc : e->allocations) {
-                dbg_mem_peak = std::max(dbg_mem_peak, alloc.usage);
+                dbg_mem_peak = (std::max)(dbg_mem_peak, alloc.usage);
                 dbg_end = alloc.timestamp;
             }
             ++e;
@@ -99,7 +104,7 @@ namespace sdsl {
         auto tfm_end = tfm_start;
         while (e != events.end()) {
             for (auto alloc : e->allocations) {
-                tfm_mem_peak = std::max(tfm_mem_peak, alloc.usage);
+                tfm_mem_peak = (std::max)(tfm_mem_peak, alloc.usage);
                 tfm_end = alloc.timestamp;
             }
             ++e;
@@ -117,37 +122,65 @@ namespace sdsl {
     };
 };
 
-int_vector<> load_parse(const string &infile) {
-    FILE *parse = fopen(infile.c_str(), "r");
+void compute_BWT(uint32_t *Text, long n, long k, string filename) {
+    sa_index_t *SA = (sa_index_t*)malloc(n*sizeof(*SA));
+    printf("Computing SA of size %ld over an alphabet of size %ld\n", n, k);
+    int depth = sacak_int(Text, SA, n, k);
+    printf("SA computed with depth: %d\n", depth);
 
-    fseek(parse, 0, SEEK_END);
-    size_t n;
-    n = ftell(parse);
-    fseek(parse, 0, SEEK_SET);
-    n = n/4;
-
-    int_vector<> v(n, 0, 32);
-    uint32_t tmp, max = 0, min = (1 << 31) - 1;
-    for (size_t i = 0; i < n; i++) {
-        fread(&tmp, sizeof(uint32_t), 1, parse);
-        //tmp--; // the lowest phrase ID is 1 // not anymore
-        v[i] = tmp;
-        if (tmp > max) max = tmp;
-        if (tmp < min) min = tmp;
+    // transform SA->BWT inplace and write remapped last array, and possibly sainfo
+    sa_index_t *BWTsa = SA; // BWT overlapping SA
+    assert(n>1);
+    // first BWT symbol
+    assert(SA[0] == n);
+    // 2nd, 3rd etc BWT symbols
+    for (long i = 0; i < n; i++) {
+        if(SA[i] == 0) {
+            assert(i == 1);  // Text[0]=$abc... is the second lex word
+            BWTsa[i] = 0;   // eos in BWT, there is no phrase in D corresponding to this symbol so we write dummy values
+        }
+        else {
+            BWTsa[i] = Text[SA[i]-1];
+        }
+        //if(BWTsa[i]==0) cout << i << endl;
     }
-    cout << "Max parse id: " << max << endl;
-    cout << "Min parse id: " << min << endl;
-    return v;
+    printf("BWT constructed\n");
+
+    FILE *fout = fopen(filename.c_str(), "wb");
+    fwrite(BWTsa, sizeof(BWTsa[0]), n, fout);
+    fclose(fout);
+    printf("BWT written to file\n");
 }
 
-void print_vector(const int_vector<>& v, int size) {
-    cout << v << endl;
-    cout << v.size() << endl;
+uint32_t* load_parse(const string &infile, size_t &psize) {
+    FILE *fp = fopen(infile.c_str(), "r");
+
+    fseek(fp, 0, SEEK_END);
+    size_t n;
+    n = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    n = n/4;
+    psize = n;
+
+    uint32_t *parse = new uint32_t[n+1];
+    size_t s = fread(parse, sizeof(*parse), n, fp);
+    if (s != n) { printf("Parse loading error!"); exit(1); }
+    parse[n] = 0; //sacak needs this
+    return parse;
 }
+
+
+size_t compute_sigma(const uint32_t* parse, const size_t psize) {
+    uint32_t max = 0;
+    for (size_t i = 0; i < psize; i++) {
+        if (max < parse[i]) max = parse[i];
+    }
+    return (max + 1);
+}
+
 
 int main(int argc, char **argv) {
     //set default configuration
-    construct_config::byte_algo_sa = LIBDIVSUFSORT;
     bool informative = false; //informative mode
     string infile = "Makefile";
     string outfile = "Makefile.tfm";
@@ -158,39 +191,7 @@ int main(int argc, char **argv) {
         cerr << "At least 2 parameters expected" << endl;
         return 1;
     }
-    enum {
-        SA, IN, NO
-    } last_option; //enumeration for last option
-    last_option = NO;
-    for (int i = 1; i < argc - 2; i++) { //analyze options
-        switch (last_option) {
-            case NO:
-            case IN: //last option does not require a parameter, read next option
-                if (strcmp(argv[i], "-i") == 0) { //enable informative mode
-                    last_option = IN;
-                    informative = true;
-                } else if (strcmp(argv[i], "-sa") == 0) {
-                    last_option = SA;
-                } else {
-                    printUsage(argv);
-                    cerr << "Unknown option " << argv[i] << endl;
-                    return 1;
-                }
-                break;
-            case SA: //choose suffix array construction algorithm
-                if (strcmp(argv[i], "DIVSUFSORT") == 0) {
-                    construct_config::byte_algo_sa = LIBDIVSUFSORT;
-                } else if (strcmp(argv[i], "SE_SAIS") == 0) {
-                    construct_config::byte_algo_sa = SE_SAIS;
-                } else {
-                    printUsage(argv);
-                    cerr << "Unknown suffix array construction algorithm " << argv[i] << endl;
-                    return 1;
-                }
-                last_option = NO;
-                break;
-        }
-    }
+    
     infile = argv[argc - 2];
     outfile = argv[argc - 1];
 
@@ -201,15 +202,13 @@ int main(int argc, char **argv) {
     memory_monitor::start();
     {
         cache_config config(true, "./", util::basename(infile));
-        int_vector<> parse = load_parse(infile);
-        //print_vector(parse, parse.size());
-        csa_wt<wt_blcd_int<>> csa;
-        construct_im(csa, parse);
-        fm_size = size_in_bytes(csa);
-        auto res = construct_tfm_index(tfm, move(csa), config);
+        size_t psize, sigma = 0; 
+        uint32_t *parse = load_parse(infile, psize);
+        sigma = compute_sigma(parse, psize);
+        compute_BWT(parse, psize+1, sigma, infile + ".bwt");
+        delete parse;
+        construct_tfm_index(tfm, infile + ".bwt", psize+1, config);
         tfm_size = size_in_bytes(tfm);
-        min_k = res.first;
-        min_edges = res.second;
     }
     memory_monitor::stop();
 

@@ -51,6 +51,8 @@
 
 #include "dbg_algorithms.hpp"
 
+typedef uint32_t sa_index_t;
+
 struct tfm_index_tag {
 };
 
@@ -86,6 +88,17 @@ private:
             sdsl::bit_vector &&din
     );
 
+    // constructor for gSACAK
+    template<typename t_tfm_index_type>
+    friend void construct_tfm_index(
+            t_tfm_index_type &tfm_index,
+            std::string filename,
+            const size_t psize,
+            sdsl::cache_config &config
+    );
+
+
+    // constructor for the .L, .din, .dout files
     template<typename t_tfm_index_type>
     friend void construct_from_pfwg(
             t_tfm_index_type &tfm_index,
@@ -232,26 +245,36 @@ void construct(t_index &idx, const std::string &file, sdsl::cache_config &config
 //! function constructs a tfm index using a compressed suffix array in form of a BWT in a wavelet tree.
 //! note that the csa is erased during construction
 //! function returns the result of the dbg_algorithms::find_min_dbg - function
-template<class t_tfm_index_type, class t_csa_wt_type>
-std::pair<typename t_tfm_index_type::size_type, typename t_tfm_index_type::size_type>
-construct_tfm_index(t_tfm_index_type &tfm_index, t_csa_wt_type &&csa, sdsl::cache_config &config) {
+template<class t_tfm_index_type>
+void construct_tfm_index(t_tfm_index_type &tfm_index, const std::string filename, size_t psize, sdsl::cache_config &config) {
+
+    //construct a wavelet tree out of the BWT
+    sdsl::int_vector_buffer<> L(filename, std::ios::in, psize, 32, true);
+    sdsl::wt_blcd_int<> wt_L = sdsl::wt_blcd_int<>(L, psize);
+
+    std::vector<uint64_t> C = std::vector<uint64_t>(wt_L.sigma+1, 0);
+    for (uint64_t i = 0; i < psize; i++) C[L[i]+1] += 1;
+    for (uint64_t i = 0; i < wt_L.sigma; i++) C[i+1] += C[i];
+    std::cout << "C array for sigma = " << wt_L.sigma <<  " and length=" << wt_L.size() << " created!" << std::endl;
 
     typedef typename t_tfm_index_type::size_type size_type;
     std::pair<size_type, size_type> dbg_res;
+
 
     //find minimal edge-reduced DBG and store kmer bounds in a bitvector B
     sdsl::bit_vector B;
     {
         auto event = sdsl::memory_monitor::event("FINDMINDBG");
-        dbg_res = dbg_algorithms::find_min_dbg(csa, B, config);
+        dbg_res = dbg_algorithms::find_min_dbg(wt_L, C, B, config);
     }
+    std::cout << "Min dbg found!" << std::endl;
 
     //use bitvector to determine prefix intervals to be tunneled
     auto event = sdsl::memory_monitor::event("TFMINDEXCONSTRUCT");
     sdsl::bit_vector dout = B;
     sdsl::bit_vector din;
     std::swap(din, B);
-    dbg_algorithms::mark_prefix_intervals(csa, dout, din);
+    dbg_algorithms::mark_prefix_intervals(wt_L, C, dout, din);
 
     //create a buffer for newly constructed L
     std::string tmp_key = sdsl::util::to_string(sdsl::util::pid()) + "_" + sdsl::util::to_string(sdsl::util::id());
@@ -262,9 +285,9 @@ construct_tfm_index(t_tfm_index_type &tfm_index, t_csa_wt_type &&csa, sdsl::cach
         //remove redundant entries from L, dout and din
         size_type p = 0;
         size_type q = 0;
-        for (size_type i = 0; i < csa.size(); i++) {
+        for (size_type i = 0; i < wt_L.size(); i++) {
             if (din[i] == 1) {
-                L_buf.push_back(csa.wavelet_tree[i]);
+                L_buf.push_back(wt_L[i]);
                 dout[p++] = dout[i];
             }
             if (dout[i] == 1) {
@@ -276,14 +299,10 @@ construct_tfm_index(t_tfm_index_type &tfm_index, t_csa_wt_type &&csa, sdsl::cach
         dout.resize(p);
         din.resize(q);
 
-        uint64_t text_len = csa.size();
-        csa = t_csa_wt_type(); //remove csa object as it is no longer required
-
-        construct_tfm_index(tfm_index, text_len, std::move(L_buf), std::move(dout), std::move(din));
+        construct_tfm_index(tfm_index, psize, std::move(L_buf), std::move(dout), std::move(din));
     }
     //remove buffer for L
     sdsl::remove(tmp_file_name);
-    return dbg_res;
 }
 
 
@@ -294,7 +313,7 @@ void symbol_frequencies(std::vector<uint64_t> &C, sdsl::int_vector_buffer<> &L, 
 }
 
 void symbol_frequencies(std::vector<uint64_t> &C, sdsl::int_vector<8> &L) {
-    C = std::vector<uint64_t>(500, 0); // lol I hope it's enough :D
+    C = std::vector<uint64_t>(255, 0); // lol I hope it's enough :D
     for (uint64_t i = 0; i < L.size(); i++) C[L[i]+1] += 1;
     for (uint64_t i = 0; i < C.size()-1; i++) {
         C[i+1] += C[i];
@@ -317,13 +336,13 @@ void construct_tfm_index(t_tfm_index_type &tfm_index, uint64_t text_len, sdsl::i
 
     //dout
     tfm_index.m_dout = bv_type(std::move(dout));
-    sdsl::util::init_support(tfm_index.m_dout_rank, &tfm_index.m_dout);
+    //sdsl::util::init_support(tfm_index.m_dout_rank, &tfm_index.m_dout);
     sdsl::util::init_support(tfm_index.m_dout_select, &tfm_index.m_dout);
 
     //din
     tfm_index.m_din = bv_type(std::move(din));
     sdsl::util::init_support(tfm_index.m_din_rank, &tfm_index.m_din);
-    sdsl::util::init_support(tfm_index.m_din_select, &tfm_index.m_din);
+    //sdsl::util::init_support(tfm_index.m_din_select, &tfm_index.m_din);
 }
 
 void load_bitvector(sdsl::int_vector<1> &B, const std::string filename, const uint64_t n) {
@@ -332,7 +351,7 @@ void load_bitvector(sdsl::int_vector<1> &B, const std::string filename, const ui
     uint8_t buffer = 0;
     for (uint64_t i = 0; i < (n+7)/8; i++) {
         int e = fread(&buffer, sizeof(uint8_t), 1, fin);
-        if (e > 0) std::cout << "ERROR during bitvector loading!" << std::endl;
+        if (e < 0) std::cout << "ERROR during bitvector loading!" << std::endl;
         //std::cout << (int) buffer << std::endl;
         for (int j = 0; j < 8; j++) {
             bool bit = 1 & (buffer >> (7-j));

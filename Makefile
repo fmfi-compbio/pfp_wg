@@ -37,7 +37,7 @@ pfwg.x: pfwg.cpp tfm_index.hpp  gsa/gsacak.o utils.o
 
 tfm_index_construct.x: tfm_index_construct.cpp
 	$(CXX) $(CXX_FLAGS) $(CXX_OPT_FLAGS) $(C_OPTIONS) \
-	-Iinclude -Llib tfm_index_construct.cpp -o tfm_index_construct.x $(LIBS)
+	-Iinclude -Llib tfm_index_construct.cpp -o tfm_index_construct.x $(LIBS) gsa/gsacak.o utils.o
 
 tfm_index_invert.x: tfm_index_invert.cpp
 	$(CXX) $(CXX_FLAGS) $(CXX_OPT_FLAGS) $(C_OPTIONS) \

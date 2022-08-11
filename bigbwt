@@ -99,7 +99,7 @@ def main():
       return
 
     # ----------- computation of the tunneled WG of the parsing
-    command = "{exe} -i -sa DIVSUFSORT {file}.parse {file}.tunnel".format(
+    command = "{exe} {file}.parse {file}.tunnel".format(
         exe=os.path.join(dir_bigbwt, parsetunneling), file=args.input
     )
     print("==== WG Tunneling. \nCommand:", command)
