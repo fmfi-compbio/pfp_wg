@@ -19,6 +19,7 @@ test: $(EXECS)
 clean:
 	rm -f *.o gsa/*.o
 	rm -f *.x
+	rm -f data/yeast.raw.*
 
 # libs
 gsa/gsacak.o: gsa/gsacak.c gsa/gsacak.h
